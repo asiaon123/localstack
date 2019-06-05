@@ -1,5 +1,5 @@
-import random
 import json
+import random
 from requests.models import Response
 from localstack import config
 from localstack.utils.common import to_str
@@ -13,20 +13,22 @@ ACTION_PUT_RECORD = '%s.PutRecord' % ACTION_PREFIX
 ACTION_PUT_RECORDS = '%s.PutRecords' % ACTION_PREFIX
 ACTION_CREATE_STREAM = '%s.CreateStream' % ACTION_PREFIX
 ACTION_DELETE_STREAM = '%s.DeleteStream' % ACTION_PREFIX
+ACTION_UPDATE_SHARD_COUNT = '%s.UpdateShardCount' % ACTION_PREFIX
 
 
 class ProxyListenerKinesis(ProxyListener):
 
     def forward_request(self, method, path, data, headers):
-        data = json.loads(data)
+        data = json.loads(to_str(data))
 
         if random.random() < config.KINESIS_ERROR_PROBABILITY:
-            return kinesis_error_response(data)
+            if headers.get('X-Amz-Target') in [ACTION_PUT_RECORD, ACTION_PUT_RECORDS]:
+                return kinesis_error_response(data)
         return True
 
     def return_response(self, method, path, data, headers, response):
         action = headers.get('X-Amz-Target')
-        data = json.loads(data)
+        data = json.loads(to_str(data))
 
         records = []
         if action in (ACTION_CREATE_STREAM, ACTION_DELETE_STREAM):
@@ -58,6 +60,27 @@ class ProxyListenerKinesis(ProxyListener):
                 event_records.append(event_record)
             stream_name = data['StreamName']
             lambda_api.process_kinesis_records(event_records, stream_name)
+        elif action == ACTION_UPDATE_SHARD_COUNT:
+            # Currently kinesalite, which backs the Kinesis implementation for localstack, does
+            # not support UpdateShardCount:
+            # https://github.com/mhart/kinesalite/issues/61
+            #
+            # [Terraform](https://www.terraform.io) makes the call to UpdateShardCount when it
+            # applies Kinesis resources. A Terraform run fails when this is not present.
+            #
+            # The code that follows just returns a successful response, bypassing the 400
+            # response that kinesalite returns.
+            #
+            response = Response()
+            response.status_code = 200
+            content = {
+                'CurrentShardCount': 1,
+                'StreamName': data['StreamName'],
+                'TargetShardCount': data['TargetShardCount']
+            }
+            response.encoding = 'UTF-8'
+            response._content = json.dumps(content)
+            return response
 
 
 # instantiate listener
@@ -68,7 +91,7 @@ def kinesis_error_response(data):
     error_response = Response()
     error_response.status_code = 200
     content = {'FailedRecordCount': 1, 'Records': []}
-    for record in data['Records']:
+    for record in data.get('Records', []):
         content['Records'].append({
             'ErrorCode': 'ProvisionedThroughputExceededException',
             'ErrorMessage': 'Rate exceeded for shard X in stream Y under account Z.'

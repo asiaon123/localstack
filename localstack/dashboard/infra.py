@@ -10,6 +10,7 @@ from localstack.utils.aws.aws_models import (ElasticSearch, S3Notification,
     EventSource, DynamoDB, DynamoDBStream, FirehoseStream, S3Bucket, SqsQueue,
     KinesisShard, KinesisStream, LambdaFunction)
 from localstack.utils.aws import aws_stack
+from localstack.utils.common import to_str
 from localstack.constants import REGION_LOCAL, DEFAULT_REGION
 from six import iteritems
 
@@ -38,7 +39,8 @@ def run_cached(cmd, cache_duration_secs=None):
         'AWS_DEFAULT_REGION': os.environ.get('AWS_DEFAULT_REGION') or DEFAULT_REGION,
         'PYTHONWARNINGS': 'ignore:Unverified HTTPS request'
     })
-    return run(cmd, cache_duration_secs=cache_duration_secs, env_vars=env_vars)
+    return run(cmd, cache_duration_secs=cache_duration_secs, env_vars=env_vars,
+               stderr=open(os.devnull, 'w'))
 
 
 def run_aws_cmd(service, cmd_params, env=None, cache_duration_secs=None):
@@ -397,7 +399,7 @@ def get_firehose_streams(filter='.*', pool={}, env=None):
 def read_kinesis_iterator(shard_iterator, max_results=10, env=None):
     data = cmd_kinesis('get-records --shard-iterator %s --limit %s' %
         (shard_iterator, max_results), env, cache_duration_secs=0)
-    data = json.loads(data)
+    data = json.loads(to_str(data))
     result = data
     return result
 

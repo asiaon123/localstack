@@ -1,8 +1,8 @@
-[![Build Status](https://travis-ci.org/localstack/localstack.png)](https://travis-ci.org/localstack/localstack) [![Backers on Open Collective](https://opencollective.com/localstack/backers/badge.svg)](#backers) [![Sponsors on Open Collective](https://opencollective.com/localstack/sponsors/badge.svg)](#sponsors) [![Coverage Status](https://coveralls.io/repos/github/atlassian/localstack/badge.svg?branch=master)](https://coveralls.io/github/atlassian/localstack?branch=master)
+[![Build Status](https://travis-ci.org/localstack/localstack.svg)](https://travis-ci.org/localstack/localstack) [![Backers on Open Collective](https://opencollective.com/localstack/backers/badge.svg)](#backers) [![Sponsors on Open Collective](https://opencollective.com/localstack/sponsors/badge.svg)](#sponsors) [![Coverage Status](https://coveralls.io/repos/github/localstack/localstack/badge.svg?branch=master)](https://coveralls.io/github/localstack/localstack?branch=master)
 [![Gitter](https://img.shields.io/gitter/room/localstack/Platform.svg)](https://gitter.im/localstack/Platform)
 [![PyPI Version](https://badge.fury.io/py/localstack.svg)](https://badge.fury.io/py/localstack)
 [![PyPI License](https://img.shields.io/pypi/l/localstack.svg)](https://img.shields.io/pypi/l/localstack.svg)
-[![Code Climate](https://codeclimate.com/github/atlassian/localstack/badges/gpa.svg)](https://codeclimate.com/github/atlassian/localstack)
+[![Code Climate](https://codeclimate.com/github/localstack/localstack/badges/gpa.svg)](https://codeclimate.com/github/localstack/localstack)
 [![Twitter](https://img.shields.io/twitter/url/http/shields.io.svg?style=social)](https://twitter.com/_localstack)
 
 # LocalStack - A fully functional local AWS cloud stack
@@ -15,6 +15,7 @@ Currently, the focus is primarily on supporting the AWS cloud stack.
 
 # Announcements
 
+* **2018-01-10**: **Help wanted!** Please [fill out this survey](https://lambdastudy.typeform.com/to/kDUvvy?source=localstack-github) to support a research study on the usage of Serverless and Function-as-a-Service (FaaS) services, conducted at Chalmers University of Technology. The survey only takes 5-10 minutes of your time. Many thanks for your participation!!
 * **2017-08-27**: **We need your support!** LocalStack is growing fast, we now have thousands of developers using the platform on a regular basis. Last month we have recorded a staggering 100k test runs, with 25k+ DynamoDB tables, 20k+ SQS queues, 15k+ Kinesis streams, 13k+ S3 buckets, and 10k+ Lambda functions created locally - for 0$ costs (more details to be published soon). Bug and feature requests are pouring in, and we now need some support from _you_ to keep the open source version actively maintained. Please check out [Open Collective](https://opencollective.com/localstack) and become a [backer](https://github.com/localstack/localstack#backers) or [supporter](https://github.com/localstack/localstack#backers) of the project today! Thanks everybody for contributing. ♥
 * **2017-07-20**: Please note: Starting with version `0.7.0`, the Docker image will be pushed
 and kept up to date under the **new name** `localstack/localstack`. (This means that you may
@@ -44,6 +45,11 @@ any longer.
 * **CloudFormation** at http://localhost:4581
 * **CloudWatch** at http://localhost:4582
 * **SSM** at http://localhost:4583
+* **SecretsManager** at http://localhost:4584
+* **StepFunctions** at http://localhost:4585
+* **CloudWatch Logs** at http://localhost:4586
+* **STS** at http://localhost:4592
+* **IAM** at http://localhost:4593
 
 
 Additionally, *LocalStack* provides a powerful set of tools to interact with the cloud services, including
@@ -61,12 +67,6 @@ missing functionality on top of them:
 * **Error injection:** *LocalStack* allows to inject errors frequently occurring in real Cloud environments,
   for instance `ProvisionedThroughputExceededException` which is thrown by Kinesis or DynamoDB if the amount of
   read/write throughput is exceeded.
-* **Actual HTTP REST services**: All services in *LocalStack* allow actual HTTP connections on a TCP port. In contrast,
-  moto uses boto client proxies that are injected into all methods annotated with `@mock_sqs`. These client proxies
-  do not perform an actual REST call, but rather call a local mock service method that lives in the same process as
-  the test code.
-* **Language agnostic**: Although *LocalStack* is written in Python, it works well with arbitrary programming
-  languages and environments, due to the fact that we are using the actual REST APIs via HTTP.
 * **Isolated processes**: All services in *LocalStack* run in separate processes. The overhead of additional
   processes is negligible, and the entire stack can easily be executed on any developer machine and CI server.
   In moto, components are often hard-wired in RAM (e.g., when forwarding a message on an SNS topic to an SQS queue,
@@ -102,6 +102,8 @@ localstack start
 
 **Note**: Please do **not** use `sudo` or the `root` user - *LocalStack*
 should be installed and started entirely under a local non-root user.
+If you have problems with permissions in MacOS X Sierra,
+install with `pip install --user localstack`
 
 ## Running in Docker
 
@@ -111,7 +113,10 @@ You can also spin up *LocalStack* in Docker:
 localstack start --docker
 ```
 
-Or using docker-compose (you need to clone the repository first):
+(Note that on MacOS you may have to run `TMPDIR=/private$TMPDIR localstack start --docker` if
+`$TMPDIR` contains a symbolic link that cannot be mounted by Docker.)
+
+Or using docker-compose (you need to clone the repository first, currently requires docker-compose version 2.1+):
 
 ```
 docker-compose up
@@ -119,6 +124,31 @@ docker-compose up
 
 (Note that on MacOS you may have to run `TMPDIR=/private$TMPDIR docker-compose up` if
 `$TMPDIR` contains a symbolic link that cannot be mounted by Docker.)
+
+Use on existing docker-compose project. Add in existing services. The project can be found in docker hub, no need to download or clone source:
+
+```
+version: '2.1'
+services:
+...
+  localstack:
+    image: localstack/localstack
+    ports:
+      - "4567-4584:4567-4584"
+      - "${PORT_WEB_UI-8080}:${PORT_WEB_UI-8080}"
+    environment:
+      - SERVICES=${SERVICES- }
+      - DEBUG=${DEBUG- }
+      - DATA_DIR=${DATA_DIR- }
+      - PORT_WEB_UI=${PORT_WEB_UI- }
+      - LAMBDA_EXECUTOR=${LAMBDA_EXECUTOR- }
+      - KINESIS_ERROR_PROBABILITY=${KINESIS_ERROR_PROBABILITY- }
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - "${TMPDIR:-/tmp/localstack}:/tmp/localstack"
+```
+
+To facilitate interoperability, configuration variables can be prefixed with `LOCALSTACK_` in docker. For instance, setting `LOCALSTACK_SERVICES=s3` is equivalent to `SERVICES=s3`.
 
 ## Configurations
 
@@ -129,38 +159,52 @@ You can pass the following environment variables to LocalStack:
   [service names of the AWS CLI](http://docs.aws.amazon.com/cli/latest/reference/#available-services)
   (`kinesis`, `lambda`, `sqs`, etc), although LocalStack only supports a subset of them.
   Example value: `kinesis,lambda:4569,sqs:4570` to start Kinesis on the default port,
-  Lambda on port 4569, and SQS on port 4570.
+  Lambda on port 4569, and SQS on port 4570. In addition, the following shorthand values can be
+  specified to run a predefined ensemble of services:
+  - `serverless`: run services often used for Serverless apps (`iam`, `lambda`, `dynamodb`, `apigateway`, `s3`, `sns`)
 * `DEFAULT_REGION`: AWS region to use when talking to the API (defaults to `us-east-1`).
 * `HOSTNAME`: Name of the host to expose the services internally (defaults to `localhost`).
   Use this to customize the framework-internal communication, e.g., if services are
   started in different containers using docker-compose.
 * `HOSTNAME_EXTERNAL`: Name of the host to expose the services externally (defaults to `localhost`).
   This host is used, e.g., when returning queue URLs from the SQS service to the client.
+* `<SERVICE>_PORT_EXTERNAL`: Number of the port to expose a specific service externally (defaults to service ports above)
+  `SQS_PORT_EXTERNAL`, for example, is used when returning queue URLs from the SQS service to the client.
 * `USE_SSL`: Whether to use `https://...` URLs with SSL encryption (defaults to `false`).
 * `KINESIS_ERROR_PROBABILITY`: Decimal value between 0.0 (default) and 1.0 to randomly
   inject `ProvisionedThroughputExceededException` errors into Kinesis API responses.
 * `DYNAMODB_ERROR_PROBABILITY`: Decimal value between 0.0 (default) and 1.0 to randomly
   inject `ProvisionedThroughputExceededException` errors into DynamoDB API responses.
-* `LAMBDA_EXECUTOR`: Method to use for executing Lambda functions. Valid values are `local` (run
-  the code in a temporary directory on the local machine) or `docker` (run code in a separate
-  Docker container). In the latter case, if *LocalStack* itself is started inside Docker, then
+* `LAMBDA_EXECUTOR`: Method to use for executing Lambda functions. Possible values are:
+    - `local`: run Lambda functions in a temporary directory on the local machine
+    - `docker`: run each function invocation in a separate Docker container
+    - `docker-reuse`: create one Docker container per function and reuse it across invocations
+
+  For `docker` and `docker-reuse`, if *LocalStack* itself is started inside Docker, then
   the `docker` command needs to be available inside the container (usually requires to run the
   container in privileged mode). Default is `docker`, fallback to `local` if Docker is not available.
-* `LAMBDA_REMOTE_DOCKER`:
-    - when set to `false` (default): your lambda functions definitions will be passed to the container by
-      mounting the volume (potentially faster) It is mandatory to have the Docker client and the Docker
-      host on the same machine
-    - when set to `true`: your lambda functions definitions will be passed to the container by
+* `LAMBDA_REMOTE_DOCKER` determines whether Lambda code is copied or mounted into containers.
+  Possible values are:
+    - `true` (default): your Lambda function definitions will be passed to the container by
       copying the zip file (potentially slower). It allows for remote execution, where the host
-      and the client are not on the same machine
+      and the client are not on the same machine.
+    - `false`: your Lambda function definitions will be passed to the container by mounting a
+      volume (potentially faster). This requires to have the Docker client and the Docker
+      host on the same machine.
+* `LAMBDA_DOCKER_NETWORK` Specifies the docker network for the container running your lambda function.
 * `DATA_DIR`: Local directory for saving persistent data (currently only supported for these services:
-  Kinesis, DynamoDB, Elasticsearch). Set it to `/tmp/localstack/data` to enable persistence
+  Kinesis, DynamoDB, Elasticsearch, S3). Set it to `/tmp/localstack/data` to enable persistence
   (`/tmp/localstack` is mounted into the Docker container), leave blank to disable
   persistence (default).
 * `PORT_WEB_UI`: Port for the Web user interface (dashboard). Default is `8080`.
 * `<SERVICE>_BACKEND`: Custom endpoint URL to use for a specific service, where `<SERVICE>` is the uppercase
   service name (currently works for: `APIGATEWAY`, `CLOUDFORMATION`, `DYNAMODB`, `ELASTICSEARCH`,
   `KINESIS`, `S3`, `SNS`, `SQS`). This allows to easily integrate third-party services into LocalStack.
+* `FORCE_NONINTERACTIVE`: when running with Docker, disables the `--interactive` and `--tty` flags. Useful when running headless.
+* `DOCKER_FLAGS`: Allows to pass custom flags (e.g., volume mounts) to "docker run" when running LocalStack in Docker.
+* `START_WEB`: Flag to control whether the Web API should be started in Docker (values: `0`/`1`; default: `1`).
+* `LAMBDA_FALLBACK_URL`: Fallback URL to use when a non-existing Lambda is invoked. Either records invocations in DynamoDB (value `dynamodb://<table_name>`) or forwards invocations as a POST request (value `http(s)://...`).
+
 
 Additionally, the following *read-only* environment variables are available:
 
@@ -169,6 +213,55 @@ Additionally, the following *read-only* environment variables are available:
   (e.g., to store an item to DynamoDB or S3 from Lambda).
   The variable `LOCALSTACK_HOSTNAME` is available for both, local Lambda execution
   (`LAMBDA_EXECUTOR=local`) and execution inside separate Docker containers (`LAMBDA_EXECUTOR=docker`).
+
+### Dynamically updating configuration at runtime
+
+Each of the service APIs listed [above](https://github.com/localstack/localstack#overview) defines
+a backdoor API under the path `/?_config_` which allows to dynamically update configuration variables
+defined in [`config.py`](https://github.com/localstack/localstack/blob/master/localstack/config.py).
+
+For example, to dynamically set `KINESIS_ERROR_PROBABILITY=1` at runtime, use the following command:
+```
+curl -v -d '{"variable":"KINESIS_ERROR_PROBABILITY","value":1}' 'http://localhost:4568/?_config_'
+```
+
+### Initializing a fresh instance
+
+When a container is started for the first time, it will execute files with extensions .sh that are found in /docker-entrypoint-initaws.d. Files will be executed in alphabetical order. You can easily create aws resources on localstack using `awslocal` (or `aws`) cli tool in the initialization scripts.
+
+## A note about using custom SSL certificates (for `USE_SSL=1`)
+
+If you need to use your own SSL Certificate and keep it persistent and not use the random automatic generated Certificate, you can place into the localstack temporary directory :
+
+```
+/tmp/localstack/
+```
+
+the three named files below :
+
+```bash
+server.test.pem
+server.test.pem.crt
+server.test.pem.key
+```
+
+- the file `server.test.pem` must contains your key file content, your certificat and chain certificate files contents (do a cat in this order)
+ - the file `server.test.pem.crt` must contains your certificate and chains files contents (do a 'cat' in this order)
+- the file server.test.pem.key must contains your key file content
+***
+### Using USE_SSL and own persistent certificate with docker-compose
+
+Typically with docker-compose you can add into docker-compose.yml this volume to the localstack services :
+
+```
+volumes:
+      - "${PWD}/ls_tmp:/tmp/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+```
+
+local directory **ls_tmp** must contains the three files (server.test.pem, server.test.pem.crt, server.test.pem.key)
+
+***
 
 ## Accessing the infrastructure via CLI or code
 
@@ -209,7 +302,7 @@ infrastructure in your test setup method and then clean up everything in your te
 from localstack.services import infra
 
 def setup():
-    infra.start_infra(async=True)
+    infra.start_infra(asynchronous=True)
 
 def teardown():
     infra.stop_infra()
@@ -220,9 +313,27 @@ def my_app_test():
 
 See the example test file `tests/test_integration.py` for more details.
 
+## Integration with Serverless
+
+You can use the [`serverless-localstack`](https://www.npmjs.com/package/serverless-localstack) plugin to easily run [Serverless](https://serverless.com/framework/) applications on LocalStack.
+For more information, please check out the plugin repository here:
+https://github.com/localstack/serverless-localstack
+
+## Using local code with Lambda
+
+In order to mount a local folder, ensure that `LAMBDA_REMOTE_DOCKER` is set to `false` then set the S3 bucket name to `__local__` and the S3 key to your local path:
+
+```
+    awslocal lambda create-function --function-name myLambda \
+      --code S3Bucket="__local__",S3Key="/my/local/lambda/folder" \
+      --handler index.myHandler \
+      --runtime nodejs8.10 \
+      --role whatever
+```
+
 ## Integration with Java/JUnit
 
-In order to use *LocalStack* with Java, the project ships with a simple JUnit runner. Take a look
+In order to use *LocalStack* with Java, the project ships with a simple JUnit runner and a JUnit 5 extension. Take a look
 at the example JUnit test in `ext/java`. When you run the test, all dependencies are automatically
 downloaded and installed to a temporary directory in your system.
 
@@ -244,6 +355,43 @@ public class MyCloudAppTest {
 }
 ```
 
+Or with JUnit 5 :
+
+```
+@ExtendWith(LocalstackExtension.class)
+public class MyCloudAppTest {
+   ...
+}
+```
+
+Additionally, there is a version of the *LocalStack* Test Runner which runs in a docker container
+instead of installing *LocalStack* on the current machine. The only dependency is to have docker
+installed locally. The test runner will automatically pull the image and start the container for the
+duration of the test.  The container can be configured by using the @LocalstackDockerProperties annotation.
+
+```
+@RunWith(LocalstackDockerTestRunner.class)
+@LocalstackDockerProperties(randomizePorts = true, services = { "sqs", "kinesis:77077" })
+public class MyDockerCloudAppTest {
+
+  @Test
+  public void testKinesis() {
+    AmazonKinesis kinesis = DockerTestUtils.getClientKinesis();
+
+    ListStreamsResult streams = kinesis.listStreams();
+    ...
+```
+
+Or with JUnit 5 :
+
+```
+@ExtendWith(LocalstackDockerExtension.class)
+@LocalstackDockerProperties(randomizePorts = true, services = { "sqs", "kinesis:77077" })
+public class MyDockerCloudAppTest {
+   ...
+}
+```
+
 The *LocalStack* JUnit test runner is published as an artifact in Maven Central.
 Simply add the following dependency to your `pom.xml` file:
 
@@ -251,7 +399,7 @@ Simply add the following dependency to your `pom.xml` file:
 <dependency>
     <groupId>cloud.localstack</groupId>
     <artifactId>localstack-utils</artifactId>
-    <version>0.1.4</version>
+    <version>0.1.22</version>
 </dependency>
 ```
 
@@ -272,12 +420,20 @@ builder.withPathStyleAccessEnabled(true);
 `$TMPDIR` contains a symbolic link that cannot be mounted by Docker.
 (See details here: https://bitbucket.org/atlassian/localstack/issues/40/getting-mounts-failed-on-docker-compose-up)
 
-* If you run into file permission issues on `pip install` under Mac OS (e.g., `Permission denied: '/Library/Python/2.7/site-packages/six.py'`), then you may have to re-install `pip` via Homebrew (see [this discussion thread](https://github.com/localstack/localstack/issues/260#issuecomment-334458631)).
+* If you run into file permission issues on `pip install` under Mac OS (e.g., `Permission denied: '/Library/Python/2.7/site-packages/six.py'`), then you may have to re-install `pip` via Homebrew (see [this discussion thread](https://github.com/localstack/localstack/issues/260#issuecomment-334458631)). Alternatively, try installing
+with the `--user` flag: `pip install --user localstack`
+
 
 * If you are deploying within OpenShift, please be aware: the pod must run as `root`, and the user must have capabilities added to the running pod, in order to allow Elasticsearch to be run as the non-root `localstack` user.
 
 * The environment variable `no_proxy` is rewritten by *LocalStack*.
 (Internal requests will go straight via localhost, bypassing any proxy configuration).
+
+* For troubleshooting LocalStack start issues, you can check debug logs by running `DEBUG=1 localstack start`
+
+* In case you get errors related to node/nodejs, you may find (this issue comment: https://github.com/localstack/localstack/issues/227#issuecomment-319938530) helpful.
+
+* If you are using AWS Java libraries and need to disable SSL certificate checking, add `-Dcom.amazonaws.sdk.disableCertChecking` to the java invocation.
 
 ## Developing
 
@@ -324,6 +480,19 @@ localstack web
 
 ## Change Log
 
+* v0.9.4: Fix ARNs in CloudFormation deployments; write stderr to file in supervisord; fix Lambda invocation times; fix canonicalization of service names when running in Docker; add support for `@Nested` in Junit5; add support for batch/transaction in DynamoDB; fix output buffering for subprocesses; assign unique ports under docker-reuse; check if topic ARN exists before publish
+* v0.9.3: Fix output buffering of child processes; new release of Java libs; add imageTag attribute for Java annotation
+* v0.9.2: Update to Python 3 in Dockerfile; preserve attributes when SNS Subscribe; fix event source mapping in Lambda; fix CORS ExposeHeaders; set Lambda timeout in secs; add tags support for Lambda/Firehose; add message attributes for SQS/Lambda; fix shard count support for Kinesis; fix port mappings for CloudFormation
+* v0.9.1: Define dependent and composite services in config; forward Lambda logs to CloudWatch Logs; add SQS event deserializing for Lambda; fix AWS_PROXY for JSON list payload; add START_WEB config parameter; return correct location for S3 multipart uploads; add support for Lambda custom runtime; fix account ID for IAM responses; fix using correct SSL cert; limit memory usage for Java processes; fix unicode encoding for SNS messages; allow using `LOCALSTACK_` prefix in Docker environment variables; enable request forwarding for non-existing Lambdas; fix large downloads for S3; add API endpoint for dynamically updating config variables; fix CloudFormation stack update
+* v0.9.0: Enhance integration with Serverless; refactor CloudFormation implementation; add support for Step Functions, IAM, STS; fix CloudFormation integration; support mounting Lambda code locally; add `docker-entrypoint-initaws.d` dir for initializing resources; add S3Event Parser for Lambda; fix S3 chunk encoding; fix S3 multipart upload notification; add dotnetcore2.1 and ruby2.5 Lambda runtimes; fix issues with JDK 9; install ES plugins available in AWS
+* v0.8.10: Add kclpy to pip package; fix badges in README
+* v0.8.9: Replace moto-ext with upstream moto; fix SNS message attributes; fix swagger; make external SQS port configurable; support for SNS DeleteTopic; S3 notifications for multipart uploads; support requestContext in AWS_PROXY integration; update docs for SSL usage
+* v0.8.8: Support Docker network config for Lambda containers; support queryStringParameters for Lambda AWS_PROXY apigateway; add AWS SecretsManager service; add SQS/Lambda integration; add support for Firehose Kinesis source; add GetAlias to Lambda API; add function properties to LambdaContext for invocations; fix extraction of Java Lambda archives; check region headers for SNS; fix Lambda output buffering; fix S3 download of gzip; bump ElasticMQ to 0.14.5; fix Lambda response codes; fix syntax issues for Python 3.7
+* v0.8.7: Support .Net Core 2.0 and nodejs8.10 Lambdas; refactor Java libs and integrate with JUnit 5; support tags for ES domains; add CloudFormation support for SNS topics; fix kinesis error injection; fix override of `ES_JAVA_OPTS`; fix SQS CORS preflight response; fix S3 content md5 checks and Host header; fix ES startup issue; Bump elasticmq to 0.13.10; bump kinesalite version
+* v0.8.6: Fixes for Windows installation; bump ES to 6.2.0; support filter policy for SNS; upgrade kinesalite; refactor JUnit runner; support Lambda PutFunctionConcurrency and GetEventSourceMapping; fixes for Terraform; add golang support to Lambda; fix file permission issue in Java Lambda tests; fix S3 bucket notification config
+* v0.8.5: Fix DDB streams event type; implement CF Fn::GetAZs; async lambda for DDB events; fix S3 content-type; fix CF deployer for SQS; fix S3 ExposePorts; fix message subject in SNS; support for Firehose -> ES; pass external env vars to containers from Java; add mock for list-queue-tags; enhance docker test runner; fix Windows installation issues; new version of Java libs
+* v0.8.4: Fix `pipenv` dependency issue; Docker JUnit test runner; POJO type for Java Lambda RequestHandler; Java Lambda DynamoDB event; reuse Docker containers for Lambda invocations; API Gateway wildcard path segments; fix SNS RawMessageDelivery
+* v0.8.3: Fix DDB stream events for UPDATE operations; fix DDB streams sequence numbers; fix transfer-encoding for DDB; fix requests with missing content-length header; support non-ascii content in DynamoDB items; map external port for SQS queue URLs; default to LAMBDA_REMOTE_DOCKER=true if running in Docker; S3 lifecycle support; reduce Docker image size
 * v0.8.2: Fix S3 bucket notification configuration; CORS headers for API Gateway; fix >128k S3 multipart uploads; return valid ShardIDs in DynamoDB Streams; fix hardcoded "ddblocal" DynamoDB TableARN; import default service ports from localstack-client; fix S3 bucket policy response; Execute lambdas asynchronously if the source is a topic
 * v0.8.1: Improvements in Lambda API: publish-version, list-version, function aliases; use single map with Lambda function details; workaround for SQS .fifo queues; add test for S3 upload; initial support for SSM; fix regex to replace SQS queue URL hostnames; update linter (single quotes); use `docker.for.mac.localhost` to connect to LocalStack from Docker on Mac; fix b64 encoding for Java Lambdas; fix path of moto_server command
 * v0.8.0: Fix request data in `GenericProxyHandler`; add `$PORT_WEB_UI` and `$HOSTNAME_EXTERNAL` configs; API Gateway path parameters; enable flake8 linting; add config for service backend URLs; use ElasticMQ instead of moto for SQS; expose `$LOCALSTACK_HOSTNAME`; custom environment variable support for Lambda; improve error logging and installation for Java/JUnit; add support for S3 REST Object POST
@@ -396,7 +565,7 @@ the [**Contributor License Agreement**](doc/contributor_license_agreement).
 ## Contributors
 
 This project exists thanks to all the people who contribute.
-<a href="graphs/contributors"><img src="https://opencollective.com/localstack/contributors.svg?width=890" /></a>
+<a href="https://github.com/localstack/localstack/graphs/contributors"><img src="https://opencollective.com/localstack/contributors.svg?width=890" /></a>
 
 
 ## Backers
@@ -425,7 +594,7 @@ Support this project by becoming a sponsor. Your logo will show up here with a l
 
 ## License
 
-Copyright (c) 2017 *LocalStack* maintainers and contributors.
+Copyright (c) 2017-2019 *LocalStack* maintainers and contributors.
 
 Copyright (c) 2016 Atlassian and others.
 
@@ -433,26 +602,26 @@ This version of *LocalStack* is released under the Apache License, Version 2.0 (
 By downloading and using this software you agree to the
 [End-User License Agreement (EULA)](doc/end_user_license_agreement).
 
-We build on a number of third-party software tools, with the following licenses:
+We build on a number of third-party software tools, including the following:
 
-Third-Party software		| 	License
-----------------------------|-----------------------
-**Python/pip modules:**		|
-airspeed					| BSD License
-amazon_kclpy				| Amazon Software License
-boto3						| Apache License 2.0
-coverage					| Apache License 2.0
-docopt						| MIT License
-elasticsearch				| Apache License 2.0
-flask						| BSD License
-flask_swagger				| MIT License
-jsonpath-rw					| Apache License 2.0
-moto						| Apache License 2.0
-nose						| GNU LGPL
-pep8						| Expat license
-requests					| Apache License 2.0
-subprocess32				| PSF License
-**Node.js/npm modules:**	|
-kinesalite					| MIT License
-**Other tools:**			|
-Elasticsearch 				| Apache License 2.0
+Third-Party software      | 	License
+--------------------------|-----------------------
+**Python/pip modules:**   |
+airspeed                  | BSD License
+amazon_kclpy              | Amazon Software License
+boto3                     | Apache License 2.0
+coverage                  | Apache License 2.0
+docopt                    | MIT License
+elasticsearch             | Apache License 2.0
+flask                     | BSD License
+flask_swagger             | MIT License
+jsonpath-rw               | Apache License 2.0
+moto                      | Apache License 2.0
+nose                      | GNU LGPL
+pep8                      | Expat license
+requests                  | Apache License 2.0
+subprocess32              | PSF License
+**Node.js/npm modules:**  |
+kinesalite                | MIT License
+**Other tools:**          |
+Elasticsearch             | Apache License 2.0

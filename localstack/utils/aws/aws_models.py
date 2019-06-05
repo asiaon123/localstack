@@ -164,20 +164,35 @@ class LambdaFunction(Component):
         self.versions = {}
         self.aliases = {}
         self.envvars = {}
+        self.tags = {}
+        self.concurrency = None
         self.runtime = None
         self.handler = None
         self.cwd = None
+        self.timeout = None
+        self.last_modified = None
+        self.description = ''
+        self.role = None
+        self.memory_size = None
 
     def get_version(self, version):
         return self.versions.get(version)
 
     def name(self):
-        return self.id.split(':function:')[-1]
+        # Example ARN: arn:aws:lambda:aws-region:acct-id:function:helloworld:1
+        return self.id.split(':')[6]
 
-    def function(self, qualifier='$LATEST'):
-        version = qualifier if qualifier in self.versions else \
+    def arn(self):
+        return self.id
+
+    def function(self, qualifier=None):
+        return self.versions.get(self.get_qualifier_version(qualifier)).get('Function')
+
+    def get_qualifier_version(self, qualifier=None):
+        if not qualifier:
+            qualifier = '$LATEST'
+        return qualifier if qualifier in self.versions else \
             self.aliases.get(qualifier).get('FunctionVersion')
-        return self.versions.get(version).get('Function')
 
     def qualifier_exists(self, qualifier):
         return qualifier in self.aliases or qualifier in self.versions
@@ -279,6 +294,8 @@ class EventSource(Component):
                 inst.table = table
             else:
                 inst = DynamoDB(obj)
+        elif obj.startswith('arn:aws:sqs:'):
+            inst = SqsQueue(obj)
         elif type:
             for o in EventSource.filter_type(pool, type):
                 if o.name() == obj:

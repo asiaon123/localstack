@@ -1,5 +1,6 @@
 import unittest
-from localstack.services.s3 import s3_listener
+from localstack.services.s3 import s3_listener, multipart_content
+from requests.models import CaseInsensitiveDict, Response
 
 
 class S3ListenerTest (unittest.TestCase):
@@ -29,17 +30,17 @@ class S3ListenerTest (unittest.TestCase):
                  b'redirect"\r\n\r\nhttp://127.0.0.1:5000/?id=20170826T181315.679087009Z\r\n--------------------------'
                  b'3c48c744237517ac--\r\n')
 
-        key1, url1 = s3_listener.find_multipart_redirect_url(data1, headers)
+        key1, url1 = multipart_content.find_multipart_redirect_url(data1, headers)
 
         self.assertEqual(key1, 'uploads/20170826T181315.679087009Z/upload/pixel.png')
         self.assertEqual(url1, 'http://127.0.0.1:5000/?id=20170826T181315.679087009Z')
 
-        key2, url2 = s3_listener.find_multipart_redirect_url(data2, headers)
+        key2, url2 = multipart_content.find_multipart_redirect_url(data2, headers)
 
         self.assertEqual(key2, 'uploads/20170826T181315.679087009Z/upload/pixel.png')
         self.assertIsNone(url2, 'Should not get a redirect URL without success_action_redirect')
 
-        key3, url3 = s3_listener.find_multipart_redirect_url(data3, headers)
+        key3, url3 = multipart_content.find_multipart_redirect_url(data3, headers)
 
         self.assertIsNone(key3, 'Should not get a key without provided key')
         self.assertIsNone(url3, 'Should not get a redirect URL without provided key')
@@ -88,15 +89,139 @@ class S3ListenerTest (unittest.TestCase):
                  u'osition: form-data; name="file"; filename="pixel.txt"\r\nContent-Type: text/plain\r\n\r\nHello World'
                  u'\r\n--------------------------3c48c744237517ac--\r\n')
 
-        expanded1 = s3_listener.expand_multipart_filename(data1, headers)
+        expanded1 = multipart_content.expand_multipart_filename(data1, headers)
         self.assertIsNot(expanded1, data1, 'Should have changed content of data with filename to interpolate')
         self.assertIn(b'uploads/20170826T181315.679087009Z/upload/pixel.png', expanded1,
             'Should see the interpolated filename')
 
-        expanded2 = s3_listener.expand_multipart_filename(data2, headers)
+        expanded2 = multipart_content.expand_multipart_filename(data2, headers)
         self.assertIs(expanded2, data2, 'Should not have changed content of data with no filename to interpolate')
 
-        expanded3 = s3_listener.expand_multipart_filename(data3, headers)
+        expanded3 = multipart_content.expand_multipart_filename(data3, headers)
         self.assertIsNot(expanded3, data3, 'Should have changed content of string data with filename to interpolate')
         self.assertIn(b'uploads/20170826T181315.679087009Z/upload/pixel.txt', expanded3,
             'Should see the interpolated filename')
+
+    def test_get_bucket_lifecycle(self):
+        bucket_name = 'test-bucket'
+        returned_empty_lifecycle = s3_listener.get_lifecycle(bucket_name)
+        self.assertRegexpMatches(returned_empty_lifecycle._content, r'LifecycleConfiguration')
+
+    def test_get_bucket_name(self):
+        bucket_name = 'test-bucket'
+        s3_key = '/some-folder/some-key.txt'
+
+        hosts = ['s3-ap-northeast-1.amazonaws.com',
+                 's3-ap-northeast-2.amazonaws.com',
+                 's3-ap-south-1.amazonaws.com',
+                 's3-ap-southeast-1.amazonaws.com',
+                 's3-ap-southeast-2.amazonaws.com',
+                 's3-ca-central-1.amazonaws.com',
+                 's3-eu-central-1.amazonaws.com',
+                 's3-eu-west-1.amazonaws.com',
+                 's3-eu-west-2.amazonaws.com',
+                 's3-eu-west-3.amazonaws.com',
+                 's3-external-1.amazonaws.com',
+                 's3-sa-east-1.amazonaws.com',
+                 's3-us-east-2.amazonaws.com',
+                 's3-us-west-1.amazonaws.com',
+                 's3-us-west-2.amazonaws.com',
+                 's3.amazonaws.com',
+                 's3.ap-northeast-1.amazonaws.com',
+                 's3.ap-northeast-2.amazonaws.com',
+                 's3.ap-south-1.amazonaws.com',
+                 's3.ap-southeast-1.amazonaws.com',
+                 's3.ap-southeast-2.amazonaws.com',
+                 's3.ca-central-1.amazonaws.com',
+                 's3.cn-north-1.amazonaws.com.cn',
+                 's3.cn-northwest-1.amazonaws.com.cn',
+                 's3.dualstack.ap-northeast-1.amazonaws.com',
+                 's3.dualstack.ap-northeast-2.amazonaws.com',
+                 's3.dualstack.ap-south-1.amazonaws.com',
+                 's3.dualstack.ap-southeast-1.amazonaws.com',
+                 's3.dualstack.ap-southeast-2.amazonaws.com',
+                 's3.dualstack.ca-central-1.amazonaws.com',
+                 's3.dualstack.eu-central-1.amazonaws.com',
+                 's3.dualstack.eu-west-1.amazonaws.com',
+                 's3.dualstack.eu-west-2.amazonaws.com',
+                 's3.dualstack.eu-west-3.amazonaws.com',
+                 's3.dualstack.sa-east-1.amazonaws.com',
+                 's3.dualstack.us-east-1.amazonaws.com',
+                 's3.dualstack.us-east-2.amazonaws.com',
+                 's3.dualstack.us-west-1.amazonaws.com',
+                 's3.dualstack.us-west-2.amazonaws.com',
+                 's3.eu-central-1.amazonaws.com',
+                 's3.eu-west-1.amazonaws.com',
+                 's3.eu-west-2.amazonaws.com',
+                 's3.eu-west-3.amazonaws.com',
+                 's3.sa-east-1.amazonaws.com',
+                 's3.us-east-1.amazonaws.com',
+                 's3.us-east-2.amazonaws.com',
+                 's3.us-west-1.amazonaws.com',
+                 's3.us-west-2.amazonaws.com']
+
+        # test all available hosts with the bucket_name in the path
+        bucket_path = '/{}/{}'.format(bucket_name, s3_key)
+        for host in hosts:
+            headers = CaseInsensitiveDict({'Host': hosts[0]})
+            returned_bucket_name = s3_listener.get_bucket_name(bucket_path, headers)
+            self.assertEqual(returned_bucket_name, bucket_name, 'Should match when bucket_name is in path')
+
+        # test all available hosts with the bucket_name in the host and the path is only the s3_key
+        for host in hosts:
+            headers = CaseInsensitiveDict({'Host': '{}.{}'.format(bucket_name, host)})
+            returned_bucket_name = s3_listener.get_bucket_name(s3_key, headers)
+            self.assertEqual(returned_bucket_name, bucket_name, 'Should match when bucket_name is in the host')
+
+    def test_event_type_matching(self):
+        match = s3_listener.event_type_matches
+        self.assertTrue(match(['s3:ObjectCreated:*'], 'ObjectCreated', 'Put'))
+        self.assertTrue(match(['s3:ObjectCreated:*'], 'ObjectCreated', 'Post'))
+        self.assertTrue(match(['s3:ObjectCreated:Post'], 'ObjectCreated', 'Post'))
+        self.assertTrue(match(['s3:ObjectDeleted:*'], 'ObjectDeleted', 'Delete'))
+        self.assertFalse(match(['s3:ObjectCreated:Post'], 'ObjectCreated', 'Put'))
+        self.assertFalse(match(['s3:ObjectCreated:Post'], 'ObjectDeleted', 'Put'))
+
+    def test_is_query_allowable(self):
+        self.assertTrue(s3_listener.ProxyListenerS3.is_query_allowable('POST', 'uploadId'))
+        self.assertTrue(s3_listener.ProxyListenerS3.is_query_allowable('POST', ''))
+        self.assertTrue(s3_listener.ProxyListenerS3.is_query_allowable('PUT', ''))
+        self.assertFalse(s3_listener.ProxyListenerS3.is_query_allowable('POST', 'differentQueryString'))
+        # abort multipart upload is a delete with the same query string as a complete multipart upload
+        self.assertFalse(s3_listener.ProxyListenerS3.is_query_allowable('DELETE', 'uploadId'))
+        self.assertFalse(s3_listener.ProxyListenerS3.is_query_allowable('DELETE', 'differentQueryString'))
+        self.assertFalse(s3_listener.ProxyListenerS3.is_query_allowable('PUT', 'uploadId'))
+
+    def test_append_last_modified_headers(self):
+        xml_with_last_modified = ('<?xml version="1.0" encoding="UTF-8"?>'
+                                  '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+                                  '  <Name>thanos/Name>'
+                                  '  <Contents>'
+                                  '    <LastModified>2019-05-27T19:00:16.663Z</LastModified>'
+                                  '  </Contents>'
+                                  '</ListBucketResult>'
+                                  )
+        xml_without_last_modified = ('<?xml version="1.0" encoding="UTF-8"?>'
+                                     '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+                                     '  <Name>thanos/Name>'
+                                     '  <Contents>'
+                                     '    <NotLastModified>2019-05-27T19:00:16.663Z</NotLastModified>'
+                                     '  </Contents>'
+                                     '</ListBucketResult>'
+                                     )
+
+        # if there is a parsable date in XML <LastModified>, use it
+        response = Response()
+        s3_listener.append_last_modified_headers(response, content=xml_with_last_modified)
+        self.assertEqual('Mon, 27 May 2019 19:00:16 GMT', response.headers.get('Last-Modified', ''))
+
+        # otherwise, just fill the header with the currentdate
+        # I will not test currentDate as it is not trivial without adding dependencies
+        # so, I'm testing for the presence of the header only
+        response = Response()
+        s3_listener.append_last_modified_headers(response, content=xml_without_last_modified)
+        self.assertNotEqual('No header', response.headers.get('Last-Modified', 'No header'))
+
+        response = Response()
+        s3_listener.append_last_modified_headers(response)
+        self.assertNotEqual('No header', response.headers.get('Last-Modified', 'No header'))

@@ -3,7 +3,9 @@ IMAGE_NAME_BASE ?= localstack/java-maven-node-python
 IMAGE_TAG ?= $(shell cat localstack/constants.py | grep '^VERSION =' | sed "s/VERSION = ['\"]\(.*\)['\"].*/\1/")
 VENV_DIR ?= .venv
 VENV_RUN = . $(VENV_DIR)/bin/activate
+ADDITIONAL_MVN_ARGS ?= -DskipTests -q
 PIP_CMD ?= pip
+TEST_PATH ?= .
 
 usage:             ## Show this help
 	@fgrep -h "##" $(MAKEFILE_LIST) | fgrep -v fgrep | sed -e 's/\\$$//' | sed -e 's/##//'
@@ -11,8 +13,7 @@ usage:             ## Show this help
 install:           ## Install dependencies in virtualenv
 	(test `which virtualenv` || $(PIP_CMD) install --user virtualenv) && \
 		(test -e $(VENV_DIR) || virtualenv $(VENV_OPTS) $(VENV_DIR)) && \
-		($(VENV_RUN) && $(PIP_CMD) install --upgrade pip) && \
-		(test ! -e requirements.txt || ($(VENV_RUN); $(PIP_CMD) install six==1.10.0 ; $(PIP_CMD) install -r requirements.txt) && \
+		(test ! -e requirements.txt || ($(VENV_RUN); $(PIP_CMD) -q install -r requirements.txt) && \
 		$(VENV_RUN); PYTHONPATH=. exec python localstack/services/install.py testlibs)
 
 install-web:       ## Install npm dependencies for dashboard Web UI
@@ -22,8 +23,11 @@ publish:           ## Publish the library to the central PyPi repository
 	# build and upload archive
 	($(VENV_RUN) && ./setup.py sdist upload)
 
+build-maven:
+	cd localstack/ext/java/; mvn -Pfatjar $(ADDITIONAL_MVN_ARGS) clean javadoc:jar source:jar package $(ADDITIONAL_MVN_TARGETS)
+
 publish-maven:     ## Publish artifacts to Maven Central
-	(cd localstack/ext/java/; mvn -Pfatjar clean javadoc:jar source:jar package deploy)
+	ADDITIONAL_MVN_TARGETS=deploy ADDITIONAL_MVN_ARGS=" " make build-maven
 
 coveralls:         ## Publish coveralls metrics
 	($(VENV_RUN); coveralls)
@@ -36,16 +40,13 @@ infra:             ## Manually start the local infrastructure for testing
 
 docker-build:      ## Build Docker image
 	docker build -t $(IMAGE_NAME) .
-	# remove topmost layer ("make test") from image
-	LAST_BUT_ONE_LAYER=`docker history -q $(IMAGE_NAME) | head -n 2 | tail -n 1`; \
-		docker tag $$LAST_BUT_ONE_LAYER $(IMAGE_NAME); \
-		docker tag $$LAST_BUT_ONE_LAYER $(IMAGE_NAME):$(IMAGE_TAG)
+	# squash entire image
+	which docker-squash || $(PIP_CMD) install docker-squash; \
+		docker-squash -t $(IMAGE_NAME) $(IMAGE_NAME)
 
 docker-build-base:
-	docker build -t $(IMAGE_NAME_BASE) -f bin/Dockerfile.base .
+	docker build --squash -t $(IMAGE_NAME_BASE) -f bin/Dockerfile.base .
 	docker tag $(IMAGE_NAME_BASE) $(IMAGE_NAME_BASE):$(IMAGE_TAG)
-	which docker-squash || $(PIP_CMD) install docker-squash
-	docker-squash -t $(IMAGE_NAME_BASE):$(IMAGE_TAG) $(IMAGE_NAME_BASE):$(IMAGE_TAG)
 	docker tag $(IMAGE_NAME_BASE):$(IMAGE_TAG) $(IMAGE_NAME_BASE):latest
 
 docker-push:       ## Push Docker image to registry
@@ -82,10 +83,20 @@ web:               ## Start web application (dashboard)
 
 test:              ## Run automated tests
 	make lint && \
-		($(VENV_RUN); DEBUG=$(DEBUG) PYTHONPATH=`pwd` nosetests --with-coverage --logging-level=WARNING --nocapture --no-skip --exe --cover-erase --cover-tests --cover-inclusive --cover-package=localstack --with-xunit --exclude='$(VENV_DIR).*' --ignore-files='lambda_python3.py' .)
+		($(VENV_RUN); DEBUG=$(DEBUG) PYTHONPATH=`pwd` nosetests --with-coverage --logging-level=WARNING --nocapture --no-skip --exe --cover-erase --cover-tests --cover-inclusive --cover-package=localstack --with-xunit --exclude='$(VENV_DIR).*' --ignore-files='lambda_python3.py' $(TEST_PATH))
 
 test-java:         ## Run tests for Java/JUnit compatibility
-	cd localstack/ext/java; mvn -q test && USE_SSL=1 mvn -q test
+	cd localstack/ext/java; USE_SSL=1 mvn -q test
+
+prepare-java-tests-if-changed:
+	@(! (git log -n 1 --no-merges --raw | grep localstack/ext/java/)) || (\
+		make build-maven && cp $$(ls localstack/ext/java/target/localstack-utils*fat.jar) localstack/infra/localstack-utils-fat.jar && \
+			cp $$(ls localstack/ext/java/target/localstack-utils*tests.jar) localstack/infra/localstack-utils-tests.jar && \
+			(cd localstack/ext/java; mvn -q clean))
+
+prepare-java-tests-infra-jars:
+	make build-maven && cp $$(ls localstack/ext/java/target/localstack-utils*fat.jar) localstack/infra/localstack-utils-fat.jar && \
+			cp $$(ls localstack/ext/java/target/localstack-utils*tests.jar) localstack/infra/localstack-utils-tests.jar
 
 test-java-if-changed:
 	@(! (git log -n 1 --no-merges --raw | grep localstack/ext/java/)) || make test-java
@@ -101,19 +112,20 @@ test-docker-mount:
 
 reinstall-p2:      ## Re-initialize the virtualenv with Python 2.x
 	rm -rf $(VENV_DIR)
-	PIP_CMD=pip2 VENV_OPTS="-p `which python2`" make install
+	PIP_CMD=pip2 VENV_OPTS="-p '`which python2`'" make install
 
 reinstall-p3:      ## Re-initialize the virtualenv with Python 3.x
 	rm -rf $(VENV_DIR)
-	PIP_CMD=pip3 VENV_OPTS="-p `which python3`" make install
+	PIP_CMD=pip3 VENV_OPTS="-p '`which python3`'" make install
 
 lint:              ## Run code linter to check code style
-	($(VENV_RUN); flake8 --inline-quotes=single --show-source --max-line-length=120 --ignore=E128 --exclude=node_modules,$(VENV_DIR)*,dist .)
+	($(VENV_RUN); flake8 --inline-quotes=single --show-source --max-line-length=120 --ignore=E128,W504 --exclude=node_modules,$(VENV_DIR)*,dist .)
 
 clean:             ## Clean up (npm dependencies, downloaded infrastructure code, compiled Java classes)
 	rm -rf localstack/dashboard/web/node_modules/
 	rm -rf localstack/infra/amazon-kinesis-client
 	rm -rf localstack/infra/elasticsearch
+	rm -rf localstack/infra/elasticmq
 	rm -rf localstack/infra/dynamodb
 	rm -rf localstack/node_modules/
 	rm -rf $(VENV_DIR)

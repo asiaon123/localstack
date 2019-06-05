@@ -9,15 +9,16 @@ import logging
 from six.moves import queue as Queue
 from six.moves.urllib.parse import urlparse
 from amazon_kclpy import kcl
-from localstack.constants import (LOCALSTACK_VENV_FOLDER, LOCALSTACK_ROOT_FOLDER, REGION_LOCAL, DEFAULT_REGION)
 from localstack import config
 from localstack.config import HOSTNAME, USE_SSL
-from localstack.utils.common import run, TMP_THREADS, TMP_FILES, save_file, now, retry, short_uid
-from localstack.utils.kinesis import kclipy_helper
-from localstack.utils.kinesis.kinesis_util import EventFileReaderThread
-from localstack.utils.common import ShellCommandThread, FuncThread
+from localstack.constants import LOCALSTACK_VENV_FOLDER, LOCALSTACK_ROOT_FOLDER, REGION_LOCAL, DEFAULT_REGION
 from localstack.utils.aws import aws_stack
+from localstack.utils.common import (
+    run, TMP_THREADS, TMP_FILES, save_file, now, retry, short_uid,
+    chmod_r, rm_rf, ShellCommandThread, FuncThread)
+from localstack.utils.kinesis import kclipy_helper
 from localstack.utils.aws.aws_models import KinesisStream
+from localstack.utils.kinesis.kinesis_util import EventFileReaderThread
 
 
 EVENTS_FILE_PATTERN = os.path.join(tempfile.gettempdir(), 'kclipy.*.fifo')
@@ -386,7 +387,7 @@ if __name__ == '__main__':
     kinesis_connector.KinesisProcessor.run_processor(log_file=log_file, processor_func=receive_msg)
     """ % (LOCALSTACK_VENV_FOLDER, LOCALSTACK_ROOT_FOLDER, events_file, log_file)
     save_file(script_file, content)
-    run('chmod +x %s' % script_file)
+    chmod_r(script_file, 0o755)
     TMP_FILES.append(script_file)
     return script_file
 
@@ -394,7 +395,7 @@ if __name__ == '__main__':
 def listen_to_kinesis(stream_name, listener_func=None, processor_script=None,
         events_file=None, endpoint_url=None, log_file=None, configs={}, env=None,
         ddb_lease_table_suffix=None, env_vars={}, kcl_log_level=DEFAULT_KCL_LOG_LEVEL,
-        log_subscribers=[], wait_until_started=False):
+        log_subscribers=[], wait_until_started=False, fh_d_stream=None):
     """
     High-level function that allows to subscribe to a Kinesis stream
     and receive events in a listener function. A KCL client process is
@@ -407,10 +408,10 @@ def listen_to_kinesis(stream_name, listener_func=None, processor_script=None,
     if not processor_script:
         processor_script = generate_processor_script(events_file, log_file=log_file)
 
-    run('rm -f %s' % events_file)
+    rm_rf(events_file)
     # start event reader thread (this process)
     ready_mutex = threading.Semaphore(0)
-    thread = EventFileReaderThread(events_file, listener_func, ready_mutex=ready_mutex)
+    thread = EventFileReaderThread(events_file, listener_func, ready_mutex=ready_mutex, fh_d_stream=fh_d_stream)
     thread.start()
     # Wait until the event reader thread is ready (to avoid 'Connection refused' error on the UNIX socket)
     ready_mutex.acquire()

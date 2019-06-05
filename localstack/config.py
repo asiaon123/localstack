@@ -3,9 +3,12 @@ import os
 import socket
 import subprocess
 import tempfile
+import logging
 from os.path import expanduser
 from six import iteritems
+from boto3 import Session
 from localstack.constants import DEFAULT_SERVICE_PORTS, LOCALHOST, PATH_USER_REQUEST, DEFAULT_PORT_WEB_UI
+
 
 # randomly inject faults to Kinesis
 KINESIS_ERROR_PROBABILITY = float(os.environ.get('KINESIS_ERROR_PROBABILITY', '').strip() or 0.0)
@@ -19,11 +22,17 @@ HOSTNAME = os.environ.get('HOSTNAME', '').strip() or LOCALHOST
 # expose services on a specific host externally
 HOSTNAME_EXTERNAL = os.environ.get('HOSTNAME_EXTERNAL', '').strip() or LOCALHOST
 
+# expose SQS on a specific port externally
+SQS_PORT_EXTERNAL = int(os.environ.get('SQS_PORT_EXTERNAL') or 0)
+
 # name of the host under which the LocalStack services are available
 LOCALSTACK_HOSTNAME = os.environ.get('LOCALSTACK_HOSTNAME', '').strip() or HOSTNAME
 
 # whether to remotely copy the lambda or locally mount a volume
 LAMBDA_REMOTE_DOCKER = os.environ.get('LAMBDA_REMOTE_DOCKER', '').lower().strip() in ['true', '1']
+
+# network that the docker lambda container will be joining
+LAMBDA_DOCKER_NETWORK = os.environ.get('LAMBDA_DOCKER_NETWORK', '').strip()
 
 # folder for temporary files and data
 TMP_FOLDER = os.path.join(tempfile.gettempdir(), 'localstack')
@@ -49,6 +58,9 @@ DOCKER_SOCK = os.environ.get('DOCKER_SOCK', '').strip() or '/var/run/docker.sock
 # port of Web UI
 PORT_WEB_UI = int(os.environ.get('PORT_WEB_UI', '').strip() or DEFAULT_PORT_WEB_UI)
 
+# IP of the docker bridge used to enable access between containers
+DOCKER_BRIDGE_IP = os.environ.get('DOCKER_BRIDGE_IP', '').strip() or '172.17.0.1'
+
 # whether to use Lambda functions in a Docker container
 LAMBDA_EXECUTOR = os.environ.get('LAMBDA_EXECUTOR', '').strip()
 if not LAMBDA_EXECUTOR:
@@ -56,19 +68,29 @@ if not LAMBDA_EXECUTOR:
     try:
         if 'Linux' in subprocess.check_output('uname -a'):
             LAMBDA_EXECUTOR = 'docker'
-    except Exception as e:
+    except Exception:
         pass
+
+# Fallback URL to use when a non-existing Lambda is invoked. If this matches
+# `dynamodb://<table_name>`, then the invocation is recorded in the corresponding
+# DynamoDB table. If this matches `http(s)://...`, then the Lambda invocation is
+# forwarded as a POST request to that URL.
+LAMBDA_FALLBACK_URL = os.environ.get('LAMBDA_FALLBACK_URL', '').strip()
 
 # list of environment variable names used for configuration.
 # Make sure to keep this in sync with the above!
 # Note: do *not* include DATA_DIR in this list, as it is treated separately
-CONFIG_ENV_VARS = ['SERVICES', 'HOSTNAME', 'HOSTNAME_EXTERNAL', 'LOCALSTACK_HOSTNAME',
-    'LAMBDA_EXECUTOR', 'LAMBDA_REMOTE_DOCKER', 'USE_SSL', 'LICENSE_KEY', 'DEBUG',
-    'KINESIS_ERROR_PROBABILITY', 'DYNAMODB_ERROR_PROBABILITY', 'PORT_WEB_UI']
+CONFIG_ENV_VARS = ['SERVICES', 'HOSTNAME', 'HOSTNAME_EXTERNAL', 'LOCALSTACK_HOSTNAME', 'LAMBDA_FALLBACK_URL',
+    'LAMBDA_EXECUTOR', 'LAMBDA_REMOTE_DOCKER', 'LAMBDA_DOCKER_NETWORK', 'USE_SSL', 'LICENSE_KEY', 'DEBUG',
+    'KINESIS_ERROR_PROBABILITY', 'DYNAMODB_ERROR_PROBABILITY', 'PORT_WEB_UI', 'START_WEB', 'DOCKER_BRIDGE_IP']
+
 for key, value in iteritems(DEFAULT_SERVICE_PORTS):
-    backend_override_var = '%s_BACKEND' % key.upper().replace('-', '_')
-    if os.environ.get(backend_override_var):
-        CONFIG_ENV_VARS.append(backend_override_var)
+    clean_key = key.upper().replace('-', '_')
+    CONFIG_ENV_VARS += [clean_key + '_BACKEND', clean_key + '_PORT_EXTERNAL']
+
+# create variable aliases prefixed with LOCALSTACK_ (except LOCALSTACK_HOSTNAME)
+CONFIG_ENV_VARS += ['LOCALSTACK_' + v for v in CONFIG_ENV_VARS]
+
 
 def in_docker():
     """ Returns: True if running in a docker container, else False """
@@ -77,29 +99,33 @@ def in_docker():
     with open('/proc/1/cgroup', 'rt') as ifh:
         return 'docker' in ifh.read()
 
+
+is_in_docker = in_docker()
+
 # determine route to Docker host from container
-DOCKER_BRIDGE_IP = '172.17.0.1'
 try:
-    DOCKER_HOST_FROM_CONTAINER = socket.gethostbyname('docker.for.mac.localhost')
-    # update LOCALSTACK_HOSTNAME if docker.for.mac.localhost is available
-    if in_docker() and LOCALSTACK_HOSTNAME == DOCKER_BRIDGE_IP:
+    DOCKER_HOST_FROM_CONTAINER = DOCKER_BRIDGE_IP
+    if not is_in_docker:
+        DOCKER_HOST_FROM_CONTAINER = socket.gethostbyname('host.docker.internal')
+    # update LOCALSTACK_HOSTNAME if host.docker.internal is available
+    if is_in_docker and LOCALSTACK_HOSTNAME == DOCKER_BRIDGE_IP:
         LOCALSTACK_HOSTNAME = DOCKER_HOST_FROM_CONTAINER
 except socket.error:
-    DOCKER_HOST_FROM_CONTAINER = DOCKER_BRIDGE_IP
+    pass
 
 # make sure we default to LAMBDA_REMOTE_DOCKER=true if running in Docker
-if in_docker() and not os.environ.get('LAMBDA_REMOTE_DOCKER', '').strip():
+if is_in_docker and not os.environ.get('LAMBDA_REMOTE_DOCKER', '').strip():
     LAMBDA_REMOTE_DOCKER = True
 
 # local config file path in home directory
-CONFIG_FILE_PATH = os.path.join(expanduser("~"), '.localstack')
+CONFIG_FILE_PATH = os.path.join(expanduser('~'), '.localstack')
 
 # create folders
 for folder in [DATA_DIR, TMP_FOLDER]:
     if folder and not os.path.exists(folder):
         try:
             os.makedirs(folder)
-        except Exception as e:
+        except Exception:
             # this can happen due to a race condition when starting
             # multiple processes in parallel. Should be safe to ignore
             pass
@@ -116,6 +142,9 @@ else:
 # additional CLI commands, can be set by plugins
 CLI_COMMANDS = {}
 
+# set of valid regions
+VALID_REGIONS = set(Session().get_available_regions('sns'))
+
 
 def parse_service_ports():
     """ Parses the environment variable $SERVICE_PORTS with a comma-separated list of services
@@ -128,28 +157,28 @@ def parse_service_ports():
         parts = re.split(r'[:=]', service_port)
         service = parts[0]
         result[service] = int(parts[-1]) if len(parts) > 1 else DEFAULT_SERVICE_PORTS.get(service)
-    # Fix Elasticsearch port - we have 'es' (AWS ES API) and 'elasticsearch' (actual Elasticsearch API)
-    if result.get('es') and not result.get('elasticsearch'):
-        result['elasticsearch'] = DEFAULT_SERVICE_PORTS.get('elasticsearch')
     return result
 
 
-def populate_configs():
+def populate_configs(service_ports=None):
     global SERVICE_PORTS
 
-    SERVICE_PORTS = parse_service_ports()
+    SERVICE_PORTS = service_ports or parse_service_ports()
+    globs = globals()
 
     # define service ports and URLs as environment variables
     for key, value in iteritems(DEFAULT_SERVICE_PORTS):
         key_upper = key.upper().replace('-', '_')
 
         # define PORT_* variables with actual service ports as per configuration
-        exec('global PORT_%s; PORT_%s = SERVICE_PORTS.get("%s", 0)' % (key_upper, key_upper, key))
+        port_key = 'PORT_%s' % key_upper
+        globs[port_key] = SERVICE_PORTS.get(key, 0)
         url = 'http%s://%s:%s' % ('s' if USE_SSL else '', LOCALSTACK_HOSTNAME, SERVICE_PORTS.get(key, 0))
         # define TEST_*_URL variables with mock service endpoints
-        exec('global TEST_%s_URL; TEST_%s_URL = "%s"' % (key_upper, key_upper, url))
+        url_key = 'TEST_%s_URL' % key_upper
+        globs[url_key] = url
         # expose HOST_*_URL variables as environment variables
-        os.environ['TEST_%s_URL' % key_upper] = url
+        os.environ[url_key] = url
 
     # expose LOCALSTACK_HOSTNAME as env. variable
     os.environ['LOCALSTACK_HOSTNAME'] = LOCALSTACK_HOSTNAME
@@ -162,7 +191,11 @@ def service_port(service_key):
 # initialize config values
 populate_configs()
 
+# set log level
+if os.environ.get('DEBUG', '').lower() in ('1', 'true'):
+    logging.getLogger('').setLevel(logging.DEBUG)
+    logging.getLogger('localstack').setLevel(logging.DEBUG)
 
 # set URL pattern of inbound API gateway
 INBOUND_GATEWAY_URL_PATTERN = ('%s/restapis/{api_id}/{stage_name}/%s{path}' %
-    (TEST_APIGATEWAY_URL, PATH_USER_REQUEST))  # flake8: noqa
+    (TEST_APIGATEWAY_URL, PATH_USER_REQUEST))  # noqa

@@ -1,17 +1,19 @@
-from six.moves.BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
-import requests
 import os
 import sys
-import traceback
-import logging
 import ssl
+import socket
 import inspect
+import logging
+import traceback
+import click
+import requests
 from flask_cors import CORS
 from requests.structures import CaseInsensitiveDict
 from requests.models import Response, Request
 from six import iteritems
 from six.moves.socketserver import ThreadingMixIn
 from six.moves.urllib.parse import urlparse
+from six.moves.BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
 from localstack.config import TMP_FOLDER, USE_SSL
 from localstack.constants import ENV_INTERNAL_TEST_RUN
 from localstack.utils.common import FuncThread, generate_ssl_cert, to_bytes
@@ -22,7 +24,7 @@ QUIET = False
 SERVER_CERT_PEM_FILE = '%s/server.test.pem' % (TMP_FOLDER)
 
 # CORS settings
-CORS_ALLOWED_HEADERS = ('authorization', 'content-type', 'content-md5',
+CORS_ALLOWED_HEADERS = ('authorization', 'content-type', 'content-md5', 'cache-control',
     'x-amz-content-sha256', 'x-amz-date', 'x-amz-security-token', 'x-amz-user-agent')
 CORS_ALLOWED_METHODS = ('HEAD', 'GET', 'PUT', 'POST', 'DELETE', 'OPTIONS', 'PATCH')
 
@@ -70,6 +72,9 @@ class ProxyListener(object):
 
 class GenericProxyHandler(BaseHTTPRequestHandler):
 
+    # List of `ProxyListener` instances that are enabled by default for all requests
+    DEFAULT_LISTENERS = []
+
     def __init__(self, request, client_address, server):
         self.request = request
         self.client_address = client_address
@@ -99,21 +104,17 @@ class GenericProxyHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.method = requests.get
-        content_length = self.headers.get('Content-Length')
-        if content_length:
-            self.data_bytes = self.rfile.read(int(content_length))
-        else:
-            self.data_bytes = None
+        self.read_content()
         self.forward('GET')
 
     def do_PUT(self):
-        self.data_bytes = self.rfile.read(int(self.headers['Content-Length']))
         self.method = requests.put
+        self.read_content()
         self.forward('PUT')
 
     def do_POST(self):
-        self.data_bytes = self.rfile.read(int(self.headers['Content-Length']))
         self.method = requests.post
+        self.read_content()
         self.forward('POST')
 
     def do_DELETE(self):
@@ -128,13 +129,48 @@ class GenericProxyHandler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         self.method = requests.patch
-        self.data_bytes = self.rfile.read(int(self.headers['Content-Length']))
+        self.read_content()
         self.forward('PATCH')
 
     def do_OPTIONS(self):
         self.data_bytes = None
         self.method = requests.options
         self.forward('OPTIONS')
+
+    def read_content(self):
+        content_length = self.headers.get('Content-Length')
+        if content_length:
+            self.data_bytes = self.rfile.read(int(content_length))
+        else:
+            self.data_bytes = None
+            if self.method in (requests.post, requests.put):
+                # If the Content-Length header is missing, try to read
+                # content from the socket using a socket timeout.
+                socket_timeout_secs = 0.5
+                self.request.settimeout(socket_timeout_secs)
+                while True:
+                    try:
+                        # TODO find a more efficient way to do this!
+                        tmp = self.rfile.read(1)
+                        if self.data_bytes is None:
+                            self.data_bytes = tmp
+                        else:
+                            self.data_bytes += tmp
+                    except socket.timeout:
+                        break
+
+    def build_x_forwarded_for(self, headers):
+        x_forwarded_for = headers.get('X-Forwarded-For')
+
+        client_address = self.client_address[0]
+        server_address = ':'.join(map(str, self.server.server_address))
+
+        if x_forwarded_for:
+            x_forwarded_for_list = (x_forwarded_for, client_address, server_address)
+        else:
+            x_forwarded_for_list = (client_address, server_address)
+
+        return ', '.join(x_forwarded_for_list)
 
     def forward(self, method):
         path = self.path
@@ -153,19 +189,25 @@ class GenericProxyHandler(BaseHTTPRequestHandler):
         if 'localhost.atlassian.io' in forward_headers.get('Host'):
             forward_headers['host'] = 'localhost'
 
+        forward_headers['X-Forwarded-For'] = self.build_x_forwarded_for(forward_headers)
+
         try:
             response = None
             modified_request = None
             # update listener (pre-invocation)
-            if self.proxy.update_listener:
-                listener_result = self.proxy.update_listener.forward_request(method=method,
+            for listener in self.DEFAULT_LISTENERS + [self.proxy.update_listener]:
+                if not listener:
+                    continue
+                listener_result = listener.forward_request(method=method,
                     path=path, data=data, headers=forward_headers)
                 if isinstance(listener_result, Response):
                     response = listener_result
+                    break
                 elif isinstance(listener_result, Request):
                     modified_request = listener_result
                     data = modified_request.data
                     forward_headers = modified_request.headers
+                    break
                 elif listener_result is not True:
                     # get status code from response, or use Bad Gateway status code
                     code = listener_result if isinstance(listener_result, int) else 503
@@ -176,10 +218,13 @@ class GenericProxyHandler(BaseHTTPRequestHandler):
             if response is None:
                 if modified_request:
                     response = self.method(proxy_url, data=modified_request.data,
-                        headers=modified_request.headers)
+                        headers=modified_request.headers, stream=True)
                 else:
                     response = self.method(proxy_url, data=self.data_bytes,
-                        headers=forward_headers)
+                        headers=forward_headers, stream=True)
+                # prevent requests from processing response body
+                if not response._content_consumed and response.raw:
+                    response._content = response.raw.read()
             # update listener (post-invocation)
             if self.proxy.update_listener:
                 kwargs = {
@@ -202,8 +247,10 @@ class GenericProxyHandler(BaseHTTPRequestHandler):
 
             content_length_sent = False
             for header_key, header_value in iteritems(response.headers):
-                self.send_header(header_key, header_value)
-                content_length_sent = content_length_sent or header_key.lower() == 'content-length'
+                # filter out certain headers that we don't want to transmit
+                if header_key.lower() not in ('transfer-encoding', 'date', 'server'):
+                    self.send_header(header_key, header_value)
+                    content_length_sent = content_length_sent or header_key.lower() == 'content-length'
             if not content_length_sent:
                 self.send_header('Content-Length', '%s' % len(response.content) if response.content else 0)
 
@@ -221,9 +268,12 @@ class GenericProxyHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
         except Exception as e:
             trace = str(traceback.format_exc())
-            conn_error = 'ConnectionRefusedError' in trace or 'NewConnectionError' in trace
+            conn_errors = ('ConnectionRefusedError', 'NewConnectionError')
+            conn_error = any(e in trace for e in conn_errors)
             error_msg = 'Error forwarding request: %s %s' % (e, trace)
-            if not self.proxy.quiet or not conn_error:
+            if 'Broken pipe' in trace:
+                LOGGER.warn('Connection prematurely closed by client (broken pipe).')
+            elif not self.proxy.quiet or not conn_error:
                 LOGGER.error(error_msg)
                 if os.environ.get(ENV_INTERNAL_TEST_RUN):
                     # During a test run, we also want to print error messages, because
@@ -232,6 +282,8 @@ class GenericProxyHandler(BaseHTTPRequestHandler):
                     print('ERROR: %s' % error_msg)
             self.send_response(502)  # bad gateway
             self.end_headers()
+            # force close connection
+            self.close_connection = 1
 
     def log_message(self, format, *args):
         return
@@ -291,10 +343,15 @@ def serve_flask_app(app, port, quiet=True, host=None, cors=True):
     if cors:
         CORS(app)
     if quiet:
-        log = logging.getLogger('werkzeug')
-        log.setLevel(logging.ERROR)
+        logging.getLogger('werkzeug').setLevel(logging.ERROR)
     if not host:
         host = '0.0.0.0'
     ssl_context = GenericProxy.get_flask_ssl_context()
+    app.config['ENV'] = 'development'
+
+    def noecho(*args, **kwargs):
+        pass
+
+    click.echo = noecho
     app.run(port=int(port), threaded=True, host=host, ssl_context=ssl_context)
     return app
